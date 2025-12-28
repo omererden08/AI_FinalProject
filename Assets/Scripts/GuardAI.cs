@@ -6,6 +6,7 @@ public enum GuardState
 {
     Patrol,
     Chase,
+    Search,
     ReturnToPatrol
 }
 
@@ -19,6 +20,10 @@ public class GuardAI : MonoBehaviour
     [Header("Chase Settings")]
     [SerializeField] private float catchDistance = 1.5f;
     [SerializeField] private float waypointReachDistance = 0.5f;
+    [SerializeField] private float chasePersistenceTime = 3f;
+    [SerializeField] private float chaseSpeedMultiplier = 1.5f;
+    [SerializeField] private float searchDuration = 3f;
+    [SerializeField] private float lookAroundSpeed = 90f;
 
     [Header("References")]
     [SerializeField] private Transform player;
@@ -37,6 +42,13 @@ public class GuardAI : MonoBehaviour
     private GuardBehaviorTree behaviorTree;
     private int currentPatrolIndex;
     private Vector3 lastPatrolPosition;
+    private Vector3 lastKnownPlayerPosition;
+    private float chaseTimer;
+    private float normalSpeed;
+    private float searchTimer;
+    private bool reachedSearchPoint;
+    private float lookDirection = 1f;
+    private float totalRotation;
 
     private MeshFilter visionMeshFilter;
     private MeshRenderer visionMeshRenderer;
@@ -45,6 +57,11 @@ public class GuardAI : MonoBehaviour
     public GuardState CurrentState { get; private set; }
     public float ViewDistance => viewDistance;
     public float ViewAngle => viewAngle;
+    public float ChasePersistenceTime => chasePersistenceTime;
+    public float ChaseTimer => chaseTimer;
+    public float SearchTimer => searchTimer;
+    public Vector3 LastKnownPlayerPosition => lastKnownPlayerPosition;
+    public bool HasLastKnownPosition => lastKnownPlayerPosition != Vector3.zero;
 
     private void Start()
     {
@@ -58,12 +75,17 @@ public class GuardAI : MonoBehaviour
     {
         ProcessBehaviorTree();
         ExecuteCurrentState();
+        
+    }
+    private void LateUpdate()
+    {
         UpdateVisionCone();
     }
 
     private void InitializeComponents()
     {
         agent = GetComponent<NavMeshAgent>();
+        normalSpeed = agent.speed;
     }
 
     private void InitializeBehaviorTree()
@@ -108,6 +130,9 @@ public class GuardAI : MonoBehaviour
             case GuardState.Chase:
                 ExecuteChase();
                 break;
+            case GuardState.Search:
+                ExecuteSearch();
+                break;
             case GuardState.ReturnToPatrol:
                 ExecuteReturnToPatrol();
                 break;
@@ -124,7 +149,19 @@ public class GuardAI : MonoBehaviour
 
     private void ExecuteChase()
     {
-        agent.destination = player.position;
+        agent.speed = normalSpeed * chaseSpeedMultiplier;
+        
+        if (CanSeePlayer())
+        {
+            lastKnownPlayerPosition = player.position;
+            chaseTimer = chasePersistenceTime;
+            agent.SetDestination(player.position);
+        }
+        else
+        {
+            chaseTimer -= Time.deltaTime;
+            agent.SetDestination(lastKnownPlayerPosition);
+        }
 
         if (IsPlayerInCatchRange())
         {
@@ -132,8 +169,52 @@ public class GuardAI : MonoBehaviour
         }
     }
 
+    private void ExecuteSearch()
+    {
+        agent.speed = normalSpeed;
+
+        if (!reachedSearchPoint)
+        {
+            agent.SetDestination(lastKnownPlayerPosition);
+            
+            if (Vector3.Distance(transform.position, lastKnownPlayerPosition) < waypointReachDistance)
+            {
+                reachedSearchPoint = true;
+                agent.ResetPath();
+                totalRotation = 0f;
+            }
+            return;
+        }
+
+        float rotationAmount = lookAroundSpeed * Time.deltaTime * lookDirection;
+        transform.Rotate(0, rotationAmount, 0);
+        totalRotation += Mathf.Abs(rotationAmount);
+
+        if (totalRotation >= 180f)
+        {
+            lookDirection *= -1f;
+            totalRotation = 0f;
+        }
+
+        searchTimer -= Time.deltaTime;
+    }
+
+    public void StartSearch()
+    {
+        searchTimer = searchDuration;
+        reachedSearchPoint = false;
+        totalRotation = 0f;
+        lookDirection = 1f;
+    }
+
+    public bool IsSearchComplete()
+    {
+        return searchTimer <= 0;
+    }
+
     private void ExecuteReturnToPatrol()
     {
+        agent.speed = normalSpeed;
         agent.destination = lastPatrolPosition;
 
         if (HasReachedLastPatrolPoint())
@@ -172,7 +253,7 @@ public class GuardAI : MonoBehaviour
 
     private bool HasLineOfSightToPlayer(Vector3 direction)
     {
-        Ray ray = new Ray(transform.position + Vector3.up, direction);
+        Ray ray = new Ray(new Vector3(transform.position.x, transform.position.y / 2, transform.position.z) + Vector3.up, direction);
         
         if (Physics.Raycast(ray, out RaycastHit hit, viewDistance))
         {
@@ -213,10 +294,9 @@ public class GuardAI : MonoBehaviour
         if (!showVisionCone) return;
 
         GameObject visionConeObj = new GameObject("VisionCone");
-        visionConeObj.transform.SetParent(transform, false);
-        visionConeObj.transform.localPosition = Vector3.up * 0.2f;
-        visionConeObj.transform.localRotation = Quaternion.identity;
-        visionConeObj.transform.localScale = Vector3.one;
+        visionConeObj.transform.SetParent(null);
+        visionConeObj.transform.position = transform.position + Vector3.up * 0.1f;
+        visionConeObj.transform.rotation = transform.rotation;
 
         visionMeshFilter = visionConeObj.AddComponent<MeshFilter>();
         visionMeshRenderer = visionConeObj.AddComponent<MeshRenderer>();
@@ -225,38 +305,10 @@ public class GuardAI : MonoBehaviour
         visionMesh.name = "VisionConeMesh";
         visionMeshFilter.mesh = visionMesh;
 
-        Material coneMat = null;
-        
-        Shader urpUnlit = Shader.Find("Universal Render Pipeline/Unlit");
-        if (urpUnlit != null)
-        {
-            coneMat = new Material(urpUnlit);
-            coneMat.SetFloat("_Surface", 1);
-            coneMat.SetFloat("_Blend", 0);
-            coneMat.SetFloat("_Cull", 0);
-            coneMat.SetFloat("_ZWrite", 0);
-            coneMat.SetFloat("_AlphaClip", 0);
-            coneMat.EnableKeyword("_SURFACE_TYPE_TRANSPARENT");
-            coneMat.SetOverrideTag("RenderType", "Transparent");
-            coneMat.renderQueue = 3000;
-        }
-        else
-        {
-            Shader litShader = Shader.Find("Universal Render Pipeline/Lit");
-            if (litShader != null)
-            {
-                coneMat = new Material(litShader);
-                coneMat.SetFloat("_Surface", 1);
-                coneMat.SetFloat("_Cull", 0);
-                coneMat.renderQueue = 3000;
-            }
-            else
-            {
-                coneMat = new Material(Shader.Find("Sprites/Default"));
-            }
-        }
-        
+        Material coneMat = new Material(Shader.Find("Sprites/Default"));
         coneMat.color = normalColor;
+        coneMat.renderQueue = 3000;
+        
         visionMeshRenderer.material = coneMat;
         visionMeshRenderer.shadowCastingMode = UnityEngine.Rendering.ShadowCastingMode.Off;
         visionMeshRenderer.receiveShadows = false;
@@ -264,41 +316,45 @@ public class GuardAI : MonoBehaviour
 
     private void UpdateVisionCone()
     {
-        if (!showVisionCone || visionMesh == null) return;
+        if (!showVisionCone || visionMesh == null || visionMeshFilter == null) return;
+
+        visionMeshFilter.transform.position = transform.position + Vector3.up * 0.1f;
+        visionMeshFilter.transform.rotation = transform.rotation;
 
         int segments = 30;
         int vertexCount = segments + 2;
         
         Vector3[] vertices = new Vector3[vertexCount];
-        Vector3[] normals = new Vector3[vertexCount];
         int[] triangles = new int[segments * 3];
 
         bool canSee = CanSeePlayer();
         Color currentColor = canSee ? alertColor : normalColor;
 
         vertices[0] = Vector3.zero;
-        normals[0] = Vector3.up;
 
         float angleStep = viewAngle / segments;
         float startAngle = -viewAngle * 0.5f;
 
+        int layerMask = ~LayerMask.GetMask("Guard", "Ignore Raycast");
+
         for (int i = 0; i <= segments; i++)
         {
             float angle = startAngle + angleStep * i;
-            Vector3 direction = Quaternion.Euler(0, angle, 0) * Vector3.forward;
+            Vector3 localDir = Quaternion.Euler(0, angle, 0) * Vector3.forward;
             
             float distance = viewDistance;
-            Ray ray = new Ray(transform.position + Vector3.up * 0.5f, transform.TransformDirection(direction));
-            if (Physics.Raycast(ray, out RaycastHit hit, viewDistance))
+            Vector3 worldDir = transform.TransformDirection(localDir);
+            Ray ray = new Ray(transform.position + Vector3.up * 0.5f, worldDir);
+            
+            if (Physics.Raycast(ray, out RaycastHit hit, viewDistance, layerMask))
             {
-                if (hit.transform != player)
+                if (hit.transform != player && hit.transform != transform)
                 {
                     distance = hit.distance;
                 }
             }
 
-            vertices[i + 1] = direction * distance;
-            normals[i + 1] = Vector3.up;
+            vertices[i + 1] = localDir * distance;
         }
 
         for (int i = 0; i < segments; i++)
@@ -310,9 +366,9 @@ public class GuardAI : MonoBehaviour
 
         visionMesh.Clear();
         visionMesh.vertices = vertices;
-        visionMesh.normals = normals;
         visionMesh.triangles = triangles;
-        visionMesh.RecalculateBounds();
+        visionMesh.RecalculateNormals();
+        visionMesh.bounds = new Bounds(Vector3.zero, Vector3.one * 1000f);
 
         if (visionMeshRenderer.material != null)
         {
@@ -325,6 +381,10 @@ public class GuardAI : MonoBehaviour
         if (visionMesh != null)
         {
             Destroy(visionMesh);
+        }
+        if (visionMeshFilter != null && visionMeshFilter.gameObject != null)
+        {
+            Destroy(visionMeshFilter.gameObject);
         }
     }
 

@@ -1,28 +1,76 @@
 # Guard AI - Behavior Tree Implementation
 
-A Unity-based Guard AI system that combines **Behavior Trees** for decision-making with a **Finite State Machine (FSM)** for state execution.
+A Unity-based Guard AI system that combines **Behavior Trees** for decision-making with a **Finite State Machine (FSM)** for state execution. Includes both a **Hybrid (BT+FSM)** and **Pure Behavior Tree** implementation.
 
 ## Architecture Overview
 
-The AI system uses a hybrid approach:
-- **Behavior Tree**: Determines WHAT the guard should do (decision-making)
-- **FSM**: Handles HOW the guard performs actions (execution)
+The AI system provides two approaches:
+- **GuardAI (Hybrid)**: Behavior Tree determines WHAT to do, FSM handles HOW to execute
+- **PureBTGuardAI (Pure BT)**: Everything handled within the Behavior Tree using action nodes
+
+## Features
+
+- **Vision Cone Detection**: Distance + Angle + Line-of-sight raycast
+- **Chase Persistence**: Guards continue chasing briefly after losing sight
+- **Search Behavior**: Guards investigate last known position and look around
+- **Speed Modulation**: Guards move faster during chase
+- **In-Game Visuals**: Runtime vision cone mesh rendering
+- **Editor Gizmos**: Debug visualization in Scene view
 
 ## Behavior Tree Structure
 
+### GuardAI (Hybrid) Tree
+
 ```
 Root (Selector)
-├── Chase Branch (Sequence) ─────────── Highest Priority
-│   ├── Condition: Can see player?
-│   └── Action: Transition to Chase
+├── Chase Branch (Sequence) ─────────── Priority 1
+│   ├── Condition: Should chase? (can see OR chase timer > 0)
+│   └── Action: Set Chase State
 │
-├── Return Branch (Sequence)
-│   ├── Condition: Was chasing?
-│   ├── Condition: Lost sight of player?
-│   └── Action: Transition to Return
+├── Search Branch (Sequence) ─────────── Priority 2
+│   ├── Condition: Should search? (was chasing, lost sight, has last position)
+│   └── Action: Start Search State
 │
-└── Patrol Branch (Sequence) ─────────── Lowest Priority
-    └── Action: Continue patrolling
+├── Search Complete Branch (Sequence) ── Priority 3
+│   ├── Condition: Is searching?
+│   ├── Condition: Search complete?
+│   └── Action: Set Return State
+│
+├── Continue Search Branch (Sequence) ── Priority 4
+│   ├── Condition: Is searching?
+│   └── Action: Keep Searching
+│
+└── Patrol Branch (Sequence) ─────────── Priority 5 (Lowest)
+    └── Action: Set Patrol State
+```
+
+### PureBTGuardAI Tree
+
+```
+Root (Selector)
+├── Catch Branch (Sequence) ─────────── Priority 1 (Highest)
+│   ├── Condition: Player in catch range?
+│   └── Action: Catch Player (Game Over)
+│
+├── Chase Branch (Sequence) ─────────── Priority 2
+│   ├── Condition: Should chase?
+│   ├── Do: Update last known position
+│   ├── Do: Reset search timer
+│   └── Parallel:
+│       ├── Action: Chase Player
+│       └── Action: Play Alert Sound
+│
+├── Search Branch (Sequence) ─────────── Priority 3
+│   ├── Condition: Has last known position?
+│   ├── Condition: Is searching?
+│   └── Parallel:
+│       ├── Action: Move to last position + Look around
+│       └── Action: Update search timer
+│
+└── Patrol Branch (Sequence) ─────────── Priority 4 (Lowest)
+    ├── Do: Reset alert sound
+    ├── Do: Clear last known position
+    └── Action: Patrol
 ```
 
 ## Node Types
@@ -56,16 +104,22 @@ Root (Selector)
 | State | Description |
 |-------|-------------|
 | **Patrol** | Guard moves between waypoints in sequence |
-| **Chase** | Guard pursues the player's current position |
-| **ReturnToPatrol** | Guard returns to last patrol position after losing sight |
+| **Chase** | Guard pursues player (faster speed), tracks last known position |
+| **Search** | Guard goes to last known position and looks around (rotates left/right) |
+| **ReturnToPatrol** | Guard returns to last patrol position after search complete |
 
 ## How It Works
 
-### Every Frame:
-1. **Behavior Tree Evaluation**: The tree is ticked from root to leaves
-2. **Decision Making**: Based on conditions (can see player, was chasing, etc.), a state is decided
-3. **State Transition**: If the decision differs from current state, transition occurs
-4. **State Execution**: The FSM executes the appropriate behavior for the current state
+### Every Frame (GuardAI - Hybrid):
+1. **Behavior Tree Evaluation**: Tree is ticked from root to leaves
+2. **Decision Making**: Conditions checked (can see player, chase timer, search timer)
+3. **State Transition**: If decision differs from current state, transition occurs
+4. **State Execution**: FSM executes appropriate behavior for current state
+
+### Every Frame (PureBTGuardAI - Pure):
+1. **Behavior Tree Tick**: Tree handles both decisions AND execution
+2. **Action Nodes**: Directly control NavMeshAgent movement
+3. **Parallel Nodes**: Allow simultaneous actions (move + alert)
 
 ### Detection System:
 The guard uses a vision cone to detect the player:
@@ -73,25 +127,23 @@ The guard uses a vision cone to detect the player:
 - **View Angle**: Field of view angle (cone width)
 - **Line of Sight**: Raycast check to ensure no obstacles block the view
 
-```
-        Player
-           *
-          /
-         /  <- Within angle
-        /
-    [Guard]────────> Forward
-        \
-         \
-          \
-           *
-        Not visible (outside angle)
-```
+### Chase Persistence:
+When the guard loses sight of the player:
+1. **Chase Timer** starts counting down (default 2-3 seconds)
+2. Guard continues moving to **last known position**
+3. When timer expires, guard enters **Search** state
+
+### Search Behavior:
+1. Guard moves to **last known player position**
+2. Once arrived, guard **looks around** (rotates ±120°)
+3. After search duration expires, guard **returns to patrol**
 
 ## File Structure
 
 ```
 Assets/Scripts/
-├── GuardAI.cs                 # Main guard controller (FSM + BT integration)
+├── GuardAI.cs                 # Hybrid guard (FSM + BT integration)
+├── PureBTGuardAI.cs           # Pure behavior tree guard
 ├── BehaviorTree.cs            # Guard-specific behavior tree builder
 └── BehaviorTree/
     ├── BTNode.cs              # Base node class + NodeStatus enum
@@ -104,14 +156,30 @@ Assets/Scripts/
 
 ## Configuration (Inspector)
 
+### Vision Settings
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| View Distance | How far the guard can see | 10 |
+| View Angle | Field of view in degrees | 60 |
+
+### Chase Settings
+| Parameter | Description | Default |
+|-----------|-------------|---------|
+| Catch Distance | Distance to catch player | 1.5 |
+| Waypoint Reach Distance | Distance to reach waypoint | 0.5 |
+| Chase Persistence Time | Time to chase after losing sight | 2-3s |
+| Chase Speed Multiplier | Speed increase during chase | 1.5x |
+| Search Duration | How long to search at last position | 3-5s |
+| Look Around Speed | Rotation speed when searching | 90°/s |
+
+### In-Game Visuals
 | Parameter | Description |
 |-----------|-------------|
-| View Distance | How far the guard can see |
-| View Angle | Field of view in degrees |
-| Catch Distance | Distance at which player is caught |
-| Waypoint Reach Distance | How close guard needs to be to reach a waypoint |
-| Patrol Points | Array of transform waypoints |
-| Enable Debug | Toggle debug logging |
+| Show Vision Cone | Toggle runtime vision mesh |
+| Vision Cone Material | Optional custom material |
+| Normal Color | Vision cone color (patrolling) |
+| Alert Color | Vision cone color (chasing) |
+| Search Color | Vision cone color (searching) - PureBT only |
 
 ## Usage Example
 
@@ -155,17 +223,19 @@ This allows high-priority behaviors (like Chase) to override low-priority ones (
 
 | Priority | Behavior | Condition | Action |
 |:--------:|----------|-----------|--------|
-| 1 (Highest) | **Chase** | Can see player | Pursue player |
-| 2 | **Return** | Was chasing AND lost player | Go to last patrol point |
-| 3 (Lowest) | **Patrol** | Default | Move between waypoints |
+| 1 (Highest) | **Chase** | Can see player OR chase timer > 0 | Pursue player (faster speed) |
+| 2 | **Search** | Was chasing, lost player, chase timer expired | Go to last known position, look around |
+| 3 | **Search Complete** | Is searching AND search timer expired | Transition to return |
+| 4 | **Continue Search** | Is searching | Keep searching |
+| 5 (Lowest) | **Patrol** | Default | Move between waypoints |
 
 ### PureBTGuardAI (Pure BT) Priorities
 
 | Priority | Behavior | Condition | Action |
 |:--------:|----------|-----------|--------|
 | 1 (Highest) | **Catch** | Player in catch range | Game Over |
-| 2 | **Chase** | Can see player | Move to player + Alert |
-| 3 | **Search** | Has last known position AND searching | Investigate last position |
+| 2 | **Chase** | Can see player OR chase timer > 0 | Move to player (faster) + Alert |
+| 3 | **Search** | Has last known position AND search timer > 0 | Go to position + Look around |
 | 4 (Lowest) | **Patrol** | Default | Move between waypoints |
 
 ## UML Diagrams
@@ -231,34 +301,26 @@ Selector       Parallel
                     │   Evaluates children L→R       │
                     └────────────────┬───────────────┘
                                      │
-           ┌─────────────────────────┼─────────────────────────┐
-           │                         │                         │
-           ▼                         ▼                         ▼
-   ┌───────────────┐        ┌───────────────┐        ┌───────────────┐
-   │ CHASE Branch  │        │ RETURN Branch │        │ PATROL Branch │
-   │  (Sequence)   │        │  (Sequence)   │        │  (Sequence)   │
-   │  Priority: 1  │        │  Priority: 2  │        │  Priority: 3  │
-   └───────┬───────┘        └───────┬───────┘        └───────┬───────┘
-           │                        │                        │
-           ▼                        ▼                        ▼
-   ┌───────────────┐        ┌───────────────┐        ┌───────────────┐
-   │  CanSeePlayer │        │  WasChasing?  │        │  SetPatrol()  │
-   │      ?        │        │      ?        │        │               │
-   └───────┬───────┘        └───────┬───────┘        └───────────────┘
-           │                        │
-      Yes  │                   Yes  │
-           ▼                        ▼
-   ┌───────────────┐        ┌───────────────┐
-   │  SetChase()   │        │  LostPlayer?  │
-   │   SUCCESS     │        │      ?        │
-   └───────────────┘        └───────┬───────┘
-                                    │
-                               Yes  │
-                                    ▼
-                            ┌───────────────┐
-                            │  SetReturn()  │
-                            │   SUCCESS     │
-                            └───────────────┘
+     ┌──────────────┬────────────────┼────────────────┬──────────────┐
+     │              │                │                │              │
+     ▼              ▼                ▼                ▼              ▼
+┌─────────┐  ┌───────────┐  ┌──────────────┐  ┌───────────┐  ┌─────────┐
+│  CHASE  │  │  SEARCH   │  │SEARCH COMPLETE│ │ CONTINUE  │  │ PATROL  │
+│  Seq    │  │   Seq     │  │    Seq       │  │  SEARCH   │  │  Seq    │
+│ Pri: 1  │  │  Pri: 2   │  │   Pri: 3     │  │  Pri: 4   │  │ Pri: 5  │
+└────┬────┘  └─────┬─────┘  └──────┬───────┘  └─────┬─────┘  └────┬────┘
+     │             │               │                │             │
+     ▼             ▼               ▼                ▼             ▼
+┌──────────┐ ┌──────────┐  ┌────────────┐    ┌──────────┐  ┌──────────┐
+│ShouldChas│ │ShouldSear│  │IsSearching?│    │IsSearchin│  │SetPatrol │
+│    ?     │ │ch?       │  │SearchDone? │    │g?        │  │          │
+└────┬─────┘ └────┬─────┘  └─────┬──────┘    └────┬─────┘  └──────────┘
+     │Yes         │Yes           │Yes             │Yes
+     ▼            ▼              ▼                ▼
+┌──────────┐ ┌──────────┐  ┌────────────┐    ┌──────────┐
+│SetChase()│ │StartSearc│  │ SetReturn()│    │KeepSearch│
+│          │ │h()       │  │            │    │ing()     │
+└──────────┘ └──────────┘  └────────────┘    └──────────┘
 ```
 
 ### PureBTGuardAI Behavior Tree Flow
@@ -284,52 +346,63 @@ Selector       Parallel
      │              │               │               │               │
      ▼              ▼               ▼               ▼               │
 ┌─────────┐   ┌───────────┐   ┌───────────┐   ┌───────────┐         │
-│InRange? │   │CanSee?    │   │HasLastPos?│   │ResetAlert │         │
-└────┬────┘   └─────┬─────┘   └─────┬─────┘   └─────┬─────┘         │
-     │Yes           │Yes            │Yes            │               │
-     ▼              ▼               ▼               ▼               │
-┌─────────┐   ┌───────────┐   ┌───────────┐   ┌───────────┐         │
-│GameOver │   │UpdatePos  │   │IsSearching│   │ClearLastP │         │
-│         │   │ResetTimer │   └─────┬─────┘   └─────┬─────┘         │
-└─────────┘   └─────┬─────┘         │Yes            │               │
-                    │               ▼               ▼               │
-                    ▼         ┌───────────┐   ┌───────────┐         │
-              ┌───────────┐   │ PARALLEL  │   │  Patrol() │         │
-              │ PARALLEL  │   │  Search   │   │  Running  │         │
-              │  Chase    │   │  Actions  │   └───────────┘         │
+│InRange? │   │ShouldChas │   │HasLastPos?│   │ResetAlert │         │
+└────┬────┘   │e?         │   └─────┬─────┘   └─────┬─────┘         │
+     │Yes     └─────┬─────┘         │Yes            │               │
+     ▼              │Yes            ▼               ▼               │
+┌─────────┐         ▼         ┌───────────┐   ┌───────────┐         │
+│GameOver │   ┌───────────┐   │IsSearching│   │ClearLastP │         │
+│         │   │UpdatePos  │   └─────┬─────┘   └─────┬─────┘         │
+└─────────┘   │ResetTimer │         │Yes            │               │
+              └─────┬─────┘         ▼               ▼               │
+                    │         ┌───────────┐   ┌───────────┐         │
+                    ▼         │ PARALLEL  │   │  Patrol() │         │
+              ┌───────────┐   │MoveToLast │   │  Running  │         │
+              │ PARALLEL  │   │+LookAround│   └───────────┘         │
+              │  Chase    │   │UpdateTimer│                         │
               └─────┬─────┘   └───────────┘                         │
                     │                                               │
            ┌───────┴───────┐                                        │
            ▼               ▼                                        │
     ┌────────────┐  ┌────────────┐                                  │
-    │MoveToPlayer│  │AlertSound  │                                  │
+    │ChasePlayer │  │AlertSound  │                                  │
+    │(fast speed)│  │            │                                  │
     └────────────┘  └────────────┘                                  │
 ```
 
 ### State Transition Diagram (Hybrid GuardAI)
 
 ```
-                    ┌──────────────────────────────────────┐
-                    │                                      │
-                    │         ┌─────────────┐              │
-                    │         │             │              │
-                    │         │   PATROL    │◄─────────────┘
-                    │         │             │    Reached patrol point
-                    │         └──────┬──────┘
-                    │                │
-                    │                │ Can see player
-                    │                ▼
-                    │         ┌─────────────┐
-     Lost player    │         │             │
-     ────────────────┤         │    CHASE   │
-                    │         │             │
-                    │         └──────┬──────┘
-                    │                │
-                    │                │ Lost sight of player
-                    │                ▼
-                    │         ┌─────────────┐
-                    │         │             │
-                    └─────────│   RETURN    │
+                              ┌─────────────┐
                               │             │
-                              └─────────────┘
+         ┌────────────────────│   PATROL    │◄────────────────────┐
+         │                    │             │                     │
+         │                    └──────┬──────┘                     │
+         │                           │                            │
+         │                           │ Can see player             │
+         │                           ▼                            │
+         │                    ┌─────────────┐                     │
+         │  Lost sight        │             │                     │
+         │  (timer > 0)       │    CHASE    │──┐                  │
+         │  ┌─────────────────│  (faster)   │  │                  │
+         │  │                 └──────┬──────┘  │ Can see player   │
+         │  │                        │         │ (reset timer)    │
+         │  │                        │ Lost sight + timer expired │
+         │  │                        ▼         │                  │
+         │  │                 ┌─────────────┐  │                  │
+         │  │                 │             │◄─┘                  │
+         │  │                 │   SEARCH    │                     │
+         │  │                 │ (look around)│                    │
+         │  │                 └──────┬──────┘                     │
+         │  │                        │                            │
+         │  │                        │ Search timer expired       │
+         │  │                        ▼                            │
+         │  │                 ┌─────────────┐                     │
+         │  │                 │             │                     │
+         │  └────────────────►│   RETURN    │─────────────────────┘
+         │                    │             │  Reached patrol point
+         │                    └─────────────┘
+         │                           ▲
+         └───────────────────────────┘
+              Can see player during return
 ```

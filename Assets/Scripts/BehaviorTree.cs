@@ -18,13 +18,21 @@ public class GuardBehaviorTree
         return new BehaviorTreeBuilder()
             .Selector("GuardAI_Root")
                 .Sequence("ChaseBranch")
-                    .Condition(CanSeePlayer, "CanSeePlayer")
+                    .Condition(ShouldChase, "ShouldChase")
                     .Action(SetChaseState, "SetChase")
                 .End()
-                .Sequence("ReturnBranch")
-                    .Condition(WasChasing, "WasChasing")
-                    .Condition(LostPlayer, "LostPlayer")
+                .Sequence("SearchBranch")
+                    .Condition(ShouldSearch, "ShouldSearch")
+                    .Action(SetSearchState, "SetSearch")
+                .End()
+                .Sequence("SearchCompleteBranch")
+                    .Condition(IsSearching, "IsSearching")
+                    .Condition(SearchComplete, "SearchComplete")
                     .Action(SetReturnState, "SetReturn")
+                .End()
+                .Sequence("ContinueSearchBranch")
+                    .Condition(IsSearching, "IsSearching")
+                    .Action(KeepSearching, "KeepSearching")
                 .End()
                 .Sequence("PatrolBranch")
                     .Action(SetPatrolState, "SetPatrol")
@@ -34,10 +42,18 @@ public class GuardBehaviorTree
     }
 
     private bool CanSeePlayer() => guard.CanSeePlayer();
-    private bool WasChasing() => guard.CurrentState == GuardState.Chase;
-    private bool LostPlayer() => !guard.CanSeePlayer();
+    private bool ShouldChase() => guard.CanSeePlayer() || (guard.CurrentState == GuardState.Chase && guard.ChaseTimer > 0);
+    private bool ShouldSearch() => guard.CurrentState == GuardState.Chase && !guard.CanSeePlayer() && guard.ChaseTimer <= 0 && guard.HasLastKnownPosition;
+    private bool IsSearching() => guard.CurrentState == GuardState.Search;
+    private bool SearchComplete() => guard.IsSearchComplete();
 
     private NodeStatus SetChaseState() => SetState(GuardState.Chase);
+    private NodeStatus SetSearchState()
+    {
+        guard.StartSearch();
+        return SetState(GuardState.Search);
+    }
+    private NodeStatus KeepSearching() => SetState(GuardState.Search);
     private NodeStatus SetReturnState() => SetState(GuardState.ReturnToPatrol);
     private NodeStatus SetPatrolState() => SetState(GuardState.Patrol);
 
