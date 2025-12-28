@@ -2,23 +2,17 @@ using UnityEngine;
 using UnityEngine.AI;
 using BehaviorTreeSystem;
 
-public enum GuardState
-{
-    Patrol,
-    Chase,
-    ReturnToPatrol
-}
-
 [RequireComponent(typeof(NavMeshAgent))]
-public class GuardAI : MonoBehaviour
+public class PureBTGuardAI : MonoBehaviour
 {
     [Header("Vision Settings")]
     [SerializeField] private float viewDistance = 10f;
     [SerializeField] private float viewAngle = 60f;
-    
-    [Header("Chase Settings")]
+
+    [Header("Movement Settings")]
     [SerializeField] private float catchDistance = 1.5f;
     [SerializeField] private float waypointReachDistance = 0.5f;
+    [SerializeField] private float searchDuration = 3f;
 
     [Header("References")]
     [SerializeField] private Transform player;
@@ -30,183 +24,236 @@ public class GuardAI : MonoBehaviour
     [Header("In-Game Visuals")]
     [SerializeField] private bool showVisionCone = true;
     [SerializeField] private Material visionConeMaterial;
-    [SerializeField] private Color normalColor = new Color(1f, 1f, 0f, 0.3f);
+    [SerializeField] private Color normalColor = new Color(1f, 0.5f, 0f, 0.3f);
     [SerializeField] private Color alertColor = new Color(1f, 0f, 0f, 0.5f);
+    [SerializeField] private Color searchColor = new Color(1f, 1f, 0f, 0.4f);
 
     private NavMeshAgent agent;
-    private GuardBehaviorTree behaviorTree;
+    private BehaviorTreeRunner treeRunner;
+    
     private int currentPatrolIndex;
-    private Vector3 lastPatrolPosition;
+    private Vector3 lastKnownPlayerPosition;
+    private float searchTimer;
+    private bool hasLastKnownPosition;
+    private bool alertSoundPlayed;
 
     private MeshFilter visionMeshFilter;
     private MeshRenderer visionMeshRenderer;
     private Mesh visionMesh;
 
-    public GuardState CurrentState { get; private set; }
     public float ViewDistance => viewDistance;
     public float ViewAngle => viewAngle;
 
     private void Start()
     {
-        InitializeComponents();
-        InitializeBehaviorTree();
+        agent = GetComponent<NavMeshAgent>();
+        treeRunner = new BehaviorTreeRunner(BuildTree(), enableDebug);
         InitializeVisionCone();
-        StartPatrol();
     }
 
     private void Update()
     {
-        ProcessBehaviorTree();
-        ExecuteCurrentState();
+        treeRunner.Tick();
         UpdateVisionCone();
     }
 
-    private void InitializeComponents()
+    private BTNode BuildTree()
     {
-        agent = GetComponent<NavMeshAgent>();
+        return new BehaviorTreeBuilder()
+            .Selector("Root")
+            
+                .Sequence("CatchPlayer")
+                    .Condition(IsPlayerInCatchRange, "InCatchRange")
+                    .Action(CatchPlayer, "Catch")
+                .End()
+                
+                .Sequence("ChaseBehavior")
+                    .Condition(CanSeePlayer, "CanSee")
+                    .Do(UpdateLastKnownPosition, "UpdatePosition")
+                    .Do(ResetSearchTimer, "ResetTimer")
+                    .Parallel(2, "ChaseActions")
+                        .Action(MoveToPlayer, "MoveToPlayer")
+                        .Action(PlayAlertSound, "AlertSound")
+                    .End()
+                .End()
+                
+                .Sequence("SearchBehavior")
+                    .Condition(HasLastKnownPosition, "HasLastPos")
+                    .Condition(IsSearching, "IsSearching")
+                    .Parallel(2, "SearchActions")
+                        .Action(MoveToLastKnownPosition, "MoveToLastPos")
+                        .Action(UpdateSearchTimer, "UpdateTimer")
+                    .End()
+                .End()
+                
+                .Sequence("PatrolBehavior")
+                    .Do(ResetAlertSound, "ResetAlert")
+                    .Do(ClearLastKnownPosition, "ClearLastPos")
+                    .Action(Patrol, "Patrol")
+                .End()
+                
+            .End()
+            .Build();
     }
 
-    private void InitializeBehaviorTree()
+    #region Conditions
+
+    private bool CanSeePlayer()
     {
-        behaviorTree = new GuardBehaviorTree(this);
-        behaviorTree.SetDebugEnabled(enableDebug);
-    }
-
-    private void StartPatrol()
-    {
-        CurrentState = GuardState.Patrol;
-        GoToNextPatrolPoint();
-    }
-
-    private void ProcessBehaviorTree()
-    {
-        GuardState decision = behaviorTree.Evaluate();
-        
-        if (decision != CurrentState)
-        {
-            TransitionToState(decision);
-        }
-    }
-
-    private void TransitionToState(GuardState newState)
-    {
-        if (enableDebug)
-        {
-            Debug.Log($"[GuardAI] State: {CurrentState} -> {newState}");
-        }
-        
-        CurrentState = newState;
-    }
-
-    private void ExecuteCurrentState()
-    {
-        switch (CurrentState)
-        {
-            case GuardState.Patrol:
-                ExecutePatrol();
-                break;
-            case GuardState.Chase:
-                ExecuteChase();
-                break;
-            case GuardState.ReturnToPatrol:
-                ExecuteReturnToPatrol();
-                break;
-        }
-    }
-
-    private void ExecutePatrol()
-    {
-        if (HasReachedDestination())
-        {
-            GoToNextPatrolPoint();
-        }
-    }
-
-    private void ExecuteChase()
-    {
-        agent.destination = player.position;
-
-        if (IsPlayerInCatchRange())
-        {
-            CatchPlayer();
-        }
-    }
-
-    private void ExecuteReturnToPatrol()
-    {
-        agent.destination = lastPatrolPosition;
-
-        if (HasReachedLastPatrolPoint())
-        {
-            CurrentState = GuardState.Patrol;
-        }
-    }
-
-    private void GoToNextPatrolPoint()
-    {
-        if (patrolPoints == null || patrolPoints.Length == 0) 
-            return;
-
-        lastPatrolPosition = patrolPoints[currentPatrolIndex].position;
-        agent.destination = lastPatrolPosition;
-        currentPatrolIndex = (currentPatrolIndex + 1) % patrolPoints.Length;
-    }
-
-    public bool CanSeePlayer()
-    {
-        if (player == null) 
+        if (player == null)
             return false;
 
         Vector3 directionToPlayer = player.position - transform.position;
         float distance = directionToPlayer.magnitude;
 
-        if (distance > viewDistance) 
+        if (distance > viewDistance)
             return false;
 
         float angle = Vector3.Angle(transform.forward, directionToPlayer.normalized);
-        if (angle > viewAngle * 0.5f) 
+        if (angle > viewAngle * 0.5f)
             return false;
 
-        return HasLineOfSightToPlayer(directionToPlayer.normalized);
-    }
-
-    private bool HasLineOfSightToPlayer(Vector3 direction)
-    {
-        Ray ray = new Ray(transform.position + Vector3.up, direction);
-        
+        Ray ray = new Ray(transform.position + Vector3.up, directionToPlayer.normalized);
         if (Physics.Raycast(ray, out RaycastHit hit, viewDistance))
         {
             return hit.transform == player;
         }
-        
+
         return true;
-    }
-
-    private bool HasReachedDestination()
-    {
-        if (agent.pathPending)
-            return false;
-            
-        if (!agent.hasPath)
-            return false;
-            
-        return agent.remainingDistance < waypointReachDistance;
-    }
-
-    private bool HasReachedLastPatrolPoint()
-    {
-        return Vector3.Distance(transform.position, lastPatrolPosition) < waypointReachDistance;
     }
 
     private bool IsPlayerInCatchRange()
     {
+        if (player == null)
+            return false;
         return Vector3.Distance(transform.position, player.position) < catchDistance;
     }
 
-    private void CatchPlayer()
+    private bool HasLastKnownPosition()
     {
-        GameManager.Instance.SetGameState(GameManager.GameState.Fail);
+        return hasLastKnownPosition;
     }
+
+    private bool IsSearching()
+    {
+        return searchTimer > 0f;
+    }
+
+    #endregion
+
+    #region Actions
+
+    private NodeStatus MoveToPlayer()
+    {
+        if (player == null)
+            return NodeStatus.Failure;
+
+        agent.destination = player.position;
+
+        if (enableDebug)
+            Debug.Log("[PureBT] Moving to player");
+
+        return NodeStatus.Success;
+    }
+
+    private NodeStatus MoveToLastKnownPosition()
+    {
+        agent.destination = lastKnownPlayerPosition;
+
+        float distance = Vector3.Distance(transform.position, lastKnownPlayerPosition);
+        
+        if (enableDebug)
+            Debug.Log($"[PureBT] Searching at last known position, distance: {distance:F1}");
+
+        if (distance < waypointReachDistance)
+            return NodeStatus.Success;
+
+        return NodeStatus.Running;
+    }
+
+    private NodeStatus Patrol()
+    {
+        if (patrolPoints == null || patrolPoints.Length == 0)
+            return NodeStatus.Failure;
+
+        if (!agent.pathPending && agent.remainingDistance < waypointReachDistance)
+        {
+            currentPatrolIndex = (currentPatrolIndex + 1) % patrolPoints.Length;
+            agent.destination = patrolPoints[currentPatrolIndex].position;
+
+            if (enableDebug)
+                Debug.Log($"[PureBT] Patrolling to point {currentPatrolIndex}");
+        }
+
+        return NodeStatus.Running;
+    }
+
+    private NodeStatus PlayAlertSound()
+    {
+        if (!alertSoundPlayed)
+        {
+            alertSoundPlayed = true;
+            
+            if (enableDebug)
+                Debug.Log("[PureBT] ALERT! Player spotted!");
+        }
+
+        return NodeStatus.Success;
+    }
+
+    private NodeStatus UpdateSearchTimer()
+    {
+        searchTimer -= Time.deltaTime;
+
+        if (enableDebug)
+            Debug.Log($"[PureBT] Search time remaining: {searchTimer:F1}s");
+
+        if (searchTimer <= 0f)
+        {
+            hasLastKnownPosition = false;
+            return NodeStatus.Failure;
+        }
+
+        return NodeStatus.Success;
+    }
+
+    private NodeStatus CatchPlayer()
+    {
+        if (enableDebug)
+            Debug.Log("[PureBT] Player caught!");
+
+        GameManager.Instance.SetGameState(GameManager.GameState.Fail);
+        return NodeStatus.Success;
+    }
+
+    #endregion
+
+    #region Helper Actions
+
+    private void UpdateLastKnownPosition()
+    {
+        lastKnownPlayerPosition = player.position;
+        hasLastKnownPosition = true;
+    }
+
+    private void ResetSearchTimer()
+    {
+        searchTimer = searchDuration;
+    }
+
+    private void ResetAlertSound()
+    {
+        alertSoundPlayed = false;
+    }
+
+    private void ClearLastKnownPosition()
+    {
+        hasLastKnownPosition = false;
+    }
+
+    #endregion
+
+    #region In-Game Vision Cone
 
     private void InitializeVisionCone()
     {
@@ -274,7 +321,14 @@ public class GuardAI : MonoBehaviour
         int[] triangles = new int[segments * 3];
 
         bool canSee = CanSeePlayer();
-        Color currentColor = canSee ? alertColor : normalColor;
+        Color currentColor;
+        
+        if (canSee)
+            currentColor = alertColor;
+        else if (hasLastKnownPosition && searchTimer > 0)
+            currentColor = searchColor;
+        else
+            currentColor = normalColor;
 
         vertices[0] = Vector3.zero;
         normals[0] = Vector3.up;
@@ -328,6 +382,10 @@ public class GuardAI : MonoBehaviour
         }
     }
 
+    #endregion
+
+    #region Gizmos
+
     private void OnDrawGizmos()
     {
         DrawVisionCone();
@@ -346,7 +404,7 @@ public class GuardAI : MonoBehaviour
         Vector3 leftBoundary = Quaternion.Euler(0, -viewAngle * 0.5f, 0) * transform.forward;
         Vector3 rightBoundary = Quaternion.Euler(0, viewAngle * 0.5f, 0) * transform.forward;
 
-        Gizmos.color = new Color(1f, 1f, 0f, 0.3f);
+        Gizmos.color = new Color(1f, 0.5f, 0f, 0.3f);
         Gizmos.DrawRay(origin, leftBoundary * viewDistance);
         Gizmos.DrawRay(origin, rightBoundary * viewDistance);
         Gizmos.DrawRay(origin, transform.forward * viewDistance);
@@ -406,6 +464,13 @@ public class GuardAI : MonoBehaviour
 
         Gizmos.color = Color.red;
         Gizmos.DrawWireSphere(transform.position, catchDistance);
+
+        if (hasLastKnownPosition)
+        {
+            Gizmos.color = Color.yellow;
+            Gizmos.DrawWireSphere(lastKnownPlayerPosition, 0.5f);
+            Gizmos.DrawLine(transform.position, lastKnownPlayerPosition);
+        }
     }
 
     private void DrawPatrolPath()
@@ -429,11 +494,13 @@ public class GuardAI : MonoBehaviour
             }
         }
 
-        if (Application.isPlaying)
+        if (Application.isPlaying && agent != null && agent.hasPath)
         {
             Gizmos.color = Color.magenta;
-            Gizmos.DrawLine(transform.position, lastPatrolPosition);
-            Gizmos.DrawWireSphere(lastPatrolPosition, 0.5f);
+            Gizmos.DrawLine(transform.position, agent.destination);
+            Gizmos.DrawWireSphere(agent.destination, 0.4f);
         }
     }
+
+    #endregion
 }
