@@ -44,9 +44,9 @@ public class GameManager : MonoBehaviour
         SetGameState(GameState.Playing);
     }
 
-    public void SetGameState(GameState newState)
+    public void SetGameState(GameState newState, bool force = false)
     {
-        if (CurrentState == newState)
+        if (!force && CurrentState == newState)
             return;
 
         CurrentState = newState;
