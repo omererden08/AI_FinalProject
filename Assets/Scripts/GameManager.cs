@@ -22,6 +22,14 @@ public class GameManager : MonoBehaviour
     [Header("UI References")]
     [SerializeField] private GameObject gameStatePanel;
     [SerializeField] private TextMeshProUGUI gameStateText;
+    [SerializeField] private GameObject startMenuPanel;
+    [SerializeField] private GameObject restartPanel;
+
+    [Header("Game Objects")]
+    [SerializeField] private PlayerMovement player;
+    [SerializeField] private GameObject artifactObject;
+    [SerializeField] private GameObject doorObject;
+
 
     private Coroutine messageCoroutine;
 
@@ -41,6 +49,62 @@ public class GameManager : MonoBehaviour
 
     private void Start()
     {
+        FindUIReferences();
+        SetGameState(GameState.None);
+        Time.timeScale = 0f;
+
+        // Sahne ilk yüklendiğinde start menüsünü tekrar göster
+        if (startMenuPanel != null)
+            startMenuPanel.SetActive(true);
+
+        if (restartPanel != null)
+            restartPanel.SetActive(false);
+
+        if (gameStatePanel != null)
+            gameStatePanel.SetActive(false);
+    }
+
+    public void OnStartButtonPressed()
+    {
+        StartGame();
+        if (startMenuPanel != null)
+            startMenuPanel.SetActive(false);
+    }
+
+    public void OnRestartButtonPressed()
+    {
+        // Oyun zamanını sıfırla
+        Time.timeScale = 0f;
+
+        // GameState sıfırla
+        SetGameState(GameState.None, true);
+
+        // Oyuncuyu sıfırla
+        if (player != null)
+            player.ResetPlayer();
+
+        // Objeleri tekrar görünür yap
+        if (artifactObject != null)
+            artifactObject.SetActive(true);
+
+        if (doorObject != null)
+            doorObject.SetActive(true);
+
+        // Panelleri ayarla
+        if (restartPanel != null)
+            restartPanel.SetActive(false);
+
+        if (startMenuPanel != null)
+            startMenuPanel.SetActive(true);
+
+        if (gameStatePanel != null)
+            gameStatePanel.SetActive(false);
+    }
+
+
+
+    public void StartGame()
+    {
         SetGameState(GameState.Playing);
     }
 
@@ -54,6 +118,7 @@ public class GameManager : MonoBehaviour
 
         switch (CurrentState)
         {
+
             case GameState.Playing:
                 Time.timeScale = 1f;
                 HideGameStateUI();
@@ -65,6 +130,7 @@ public class GameManager : MonoBehaviour
 
             case GameState.Win:
                 Time.timeScale = 0f;
+                restartPanel.SetActive(true);
                 ShowGameStateUI(" Kazandınız!"); // Süresiz
                 break;
             case GameState.Locked:
@@ -73,6 +139,7 @@ public class GameManager : MonoBehaviour
 
             case GameState.Fail:
                 Time.timeScale = 0f;
+                restartPanel.SetActive(true);
                 ShowGameStateUI(" Yakalandınız!"); // Süresiz
                 break;
 
@@ -101,6 +168,22 @@ public class GameManager : MonoBehaviour
             }
         }
     }
+
+    private void FindUIReferences()
+    {
+        if (gameStatePanel == null)
+            gameStatePanel = GameObject.Find("GameStatePanel");
+
+        if (gameStateText == null)
+            gameStateText = GameObject.Find("GameStateText")?.GetComponent<TextMeshProUGUI>();
+
+        if (startMenuPanel == null)
+            startMenuPanel = GameObject.Find("Start");
+
+        if (restartPanel == null)
+            restartPanel = GameObject.Find("Restart");
+    }
+
 
     private IEnumerator HideAfterSeconds(float delay)
     {

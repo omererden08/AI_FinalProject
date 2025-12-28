@@ -3,6 +3,10 @@ using UnityEngine;
 public class PlayerMovement : MonoBehaviour
 {
     private CharacterController controller;
+
+    private Vector3 startPosition;
+    private Quaternion startRotation;
+
     private bool hasItem = false;
 
     [Header("Movement Settings")]
@@ -16,6 +20,12 @@ public class PlayerMovement : MonoBehaviour
         controller = GetComponent<CharacterController>();
     }
 
+    private void Start()
+    {
+        startPosition = transform.position;
+        startRotation = transform.rotation;
+    }
+
     void Update()
     {
         HandleMovement();
@@ -26,28 +36,26 @@ public class PlayerMovement : MonoBehaviour
         float horizontal = Input.GetAxisRaw("Horizontal");
         float vertical = Input.GetAxisRaw("Vertical");
 
-        Vector3 input = new Vector3(horizontal, 0f, vertical).normalized;
+        Vector3 input = new Vector3(horizontal, 0f, vertical);
 
-        if (input.magnitude >= 0.1f)
+        if (input.sqrMagnitude >= 0.1f)
         {
-            // Kameranýn yönüne göre düzeltme yap
             Vector3 camForward = cameraTransform.forward;
             Vector3 camRight = cameraTransform.right;
 
-            // Y yönünü yok say (dikey bakýþý etkisiz yap)
             camForward.y = 0;
             camRight.y = 0;
             camForward.Normalize();
             camRight.Normalize();
 
-            // Kamera yönüne göre hareket vektörü
-            Vector3 move = camForward * vertical + camRight * horizontal;
+            Vector3 move = (camForward * input.z + camRight * input.x).normalized;
 
             controller.Move(move * moveSpeed * Time.deltaTime);
-            // Karakter hareket yönüne baksýn (isteðe baðlý)
+
             transform.forward = move;
         }
     }
+
 
     private void OnControllerColliderHit(ControllerColliderHit other)
     {
@@ -69,7 +77,7 @@ public class PlayerMovement : MonoBehaviour
     {
         GameManager.Instance.SetGameState(GameManager.GameState.HasItem);
         hasItem = true;
-        Destroy(obj);
+        obj.SetActive(false); // Destroy yerine
     }
 
     void HandleDoorInteraction(GameObject obj)
@@ -80,7 +88,7 @@ public class PlayerMovement : MonoBehaviour
         }
         else
         {
-            Destroy(obj);
+            obj.SetActive(false); // Destroy yerine
         }
     }
 
@@ -92,6 +100,14 @@ public class PlayerMovement : MonoBehaviour
         }
     }
 
+    public void ResetPlayer()
+    {
+        hasItem = false;
+
+        // CharacterController ile pozisyon sýfýrlamak için önce disable/enable yap
+        controller.enabled = false;
+        transform.position = startPosition;
+        transform.rotation = startRotation;
+        controller.enabled = true;
+    }
 }
-
-
