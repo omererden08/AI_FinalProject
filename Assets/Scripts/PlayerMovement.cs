@@ -44,7 +44,6 @@ public class PlayerMovement : MonoBehaviour
             Vector3 move = camForward * vertical + camRight * horizontal;
 
             controller.Move(move * moveSpeed * Time.deltaTime);
-
             // Karakter hareket yönüne baksýn (isteðe baðlý)
             transform.forward = move;
         }
@@ -52,12 +51,47 @@ public class PlayerMovement : MonoBehaviour
 
     private void OnControllerColliderHit(ControllerColliderHit other)
     {
-        if (other.gameObject.CompareTag("Obj"))
+        switch (other.gameObject.tag)
         {
-            GameManager.Instance.SetGameState(GameManager.GameState.HasItem);
-            hasItem = true;
-            Destroy(other.gameObject);
+            case "Obj":
+                HandleItemPickup(other.gameObject);
+                break;
+            case "Door":
+                HandleDoorInteraction(other.gameObject);
+                break;
+            case "EndZone":
+                HandleEscapeZone();
+                break;
+        }
+    }
+
+    void HandleItemPickup(GameObject obj)
+    {
+        GameManager.Instance.SetGameState(GameManager.GameState.HasItem);
+        hasItem = true;
+        Destroy(obj);
+    }
+
+    void HandleDoorInteraction(GameObject obj)
+    {
+        if (!hasItem)
+        {
+            GameManager.Instance.SetGameState(GameManager.GameState.Locked, true);
+        }
+        else
+        {
+            Destroy(obj);
+        }
+    }
+
+    void HandleEscapeZone()
+    {
+        if (hasItem)
+        {
+            GameManager.Instance.SetGameState(GameManager.GameState.Win);
         }
     }
 
 }
+
+
